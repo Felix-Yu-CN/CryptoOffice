@@ -18,17 +18,34 @@ import XMLCoder
 
 public final class CryptoOfficeFile {
   private let oleFile: OLEFile
+  private let sourceURL: URL
 
   let encryptionInfo: AgileInfo
 
   let packageEntry: DirectoryEntry
 
+  private static func findEntry(named name: String, in entry: DirectoryEntry) -> DirectoryEntry? {
+    if entry.name == name {
+      return entry
+    }
+
+    for child in entry.children {
+      if let match = findEntry(named: name, in: child) {
+        return match
+      }
+    }
+
+    return nil
+  }
+
   public init(path: String) throws {
     do {
+      sourceURL = URL(fileURLWithPath: path)
       oleFile = try OLEFile(path)
-      guard
-        let infoEntry = oleFile.root.children.first(where: { $0.name == "EncryptionInfo" }),
-        let packageEntry = infoEntry.children.first(where: { $0.name == "EncryptedPackage" })
+      guard let infoEntry = Self.findEntry(named: "EncryptionInfo", in: oleFile.root)
+      else { throw CryptoOfficeError.fileIsNotEncrypted(path: path) }
+
+      guard let packageEntry = Self.findEntry(named: "EncryptedPackage", in: oleFile.root)
       else { throw CryptoOfficeError.fileIsNotEncrypted(path: path) }
 
       self.packageEntry = packageEntry
@@ -59,11 +76,31 @@ public final class CryptoOfficeFile {
     }
   }
 
+  public static func isEncrypted(path: String) throws -> Bool {
+    do {
+      let oleFile = try OLEFile(path)
+      return
+        findEntry(named: "EncryptionInfo", in: oleFile.root) != nil &&
+        findEntry(named: "EncryptedPackage", in: oleFile.root) != nil
+    } catch OLEError.fileIsNotOLE {
+      return false
+    }
+  }
+
   public func decrypt(password: String) throws -> Data {
     let secretKey = try encryptionInfo.secretKey(password: password)
 
     let stream = try oleFile.stream(packageEntry)
 
     return try encryptionInfo.decrypt(stream, secretKey: secretKey)
+  }
+
+  public func decryptToTemporaryFile(password: String) throws -> URL {
+    let data = try decrypt(password: password)
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+    let temporaryURL = temporaryDirectory.appendingPathComponent(sourceURL.lastPathComponent)
+
+    try data.write(to: temporaryURL)
+    return temporaryURL
   }
 }

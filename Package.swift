@@ -40,6 +40,10 @@ let package = Package(
       .product(name: "OLEKit", package: "OLEKit"),
       .product(name: "XMLCoder", package: "XMLCoder"),
     ]),
-    .testTarget(name: "CryptoOfficeTests", dependencies: ["CryptoOffice", "ZIPFoundation"]),
+    .testTarget(
+      name: "CryptoOfficeTests",
+      dependencies: ["CryptoOffice", "ZIPFoundation"],
+      exclude: ["TestWorkbook.xlsx", "美国驻华大使 - 加密.docx"]
+    ),
   ]
 )

@@ -14,14 +14,20 @@ with libraries that allow parsing decrypted data, such as
 Using CryptoOffice is easy:
 
 1. Add `import CryptoOffice` at the top of a relevant Swift source file.
-2. Use `CryptoOfficeFile(path: String)` to create a new instance with a path to your encrypted file.
-3. Call `decrypt(password: String)` on it to get decrypted data.
-4. Parse the decrypted data with a library appropriate for that format
+2. Use `CryptoOfficeFile.isEncrypted(path: String)` if you want to check whether a file is encrypted before opening it.
+3. Use `CryptoOfficeFile(path: String)` to create a new instance with a path to your encrypted file.
+4. Call `decrypt(password: String)` on it to get decrypted data.
+5. Or call `decryptToTemporaryFile(password: String)` to write the decrypted file into the system temporary directory.
+6. Parse the decrypted data with a library appropriate for that format
    ([CoreXLSX](https://github.com/CoreOffice/CoreXLSX) in this example).
 
 ```swift
 import CoreXLSX
 import CryptoOffice
+
+guard try CryptoOfficeFile.isEncrypted(path: "./categories.xlsx") else {
+  fatalError("The file is not encrypted")
+}
 
 let encryptedFile = try CryptoOfficeFile(path: "./categories.xlsx")
 let decryptedData = try encryptedFile.decrypt(password: "pass")
@@ -35,6 +41,9 @@ for path in try xlsx.parseWorksheetPaths() {
     }
   }
 }
+
+let temporaryURL = try encryptedFile.decryptToTemporaryFile(password: "pass")
+print("Decrypted file written to: \(temporaryURL.path)")
 ```
 
 ## Requirements

@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import Foundation
+
 public enum CryptoOfficeError: Error {
   case standardEncryptionNotSupported
   case fileIsNotEncrypted(path: String)
   case cantEncodePassword(encoding: String.Encoding)
   case extensibleEncryptionNotSupported
   case encryptedKeyNotSpecifiedForAgileEncryption
+  case passwordVerificationFailed
   case unknownEncryptionVersion(major: UInt16, minor: UInt16)
   case hashAlgorithmNotSupported(actual: String?, expected: [String])
 }

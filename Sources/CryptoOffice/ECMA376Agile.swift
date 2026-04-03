@@ -21,6 +21,35 @@ extension Crypto.Digest {
   var data: Data { Data(makeIterator()) }
 }
 
+private enum AgileHashAlgorithm: String, CaseIterable {
+  case sha1
+  case sha256
+  case sha384
+  case sha512
+
+  init?(officeName: String?) {
+    guard let officeName else { return nil }
+    self.init(rawValue: officeName.lowercased())
+  }
+
+  func hash(data: Data) -> Data {
+    switch self {
+    case .sha1:
+      return Insecure.SHA1.hash(data: data).data
+    case .sha256:
+      return SHA256.hash(data: data).data
+    case .sha384:
+      return SHA384.hash(data: data).data
+    case .sha512:
+      return SHA512.hash(data: data).data
+    }
+  }
+
+  static var supportedNames: [String] {
+    allCases.map { $0.rawValue }
+  }
+}
+
 struct AgileInfo: Decodable {
   struct KeyData: Decodable {
     let saltValue: Data
@@ -30,6 +59,8 @@ struct AgileInfo: Decodable {
   struct EncryptedKey: Decodable {
     let spinCount: UInt32
     let encryptedKeyValue: Data
+    let encryptedVerifierHashInput: Data
+    let encryptedVerifierHashValue: Data
     let saltValue: Data
     let hashAlgorithm: String
     let keyBits: Int
@@ -46,47 +77,114 @@ struct AgileInfo: Decodable {
   let keyData: KeyData
   let keyEncryptors: KeyEncryptors
 
+  private func deriveKey(from hash: Data, keyBits: Int) -> [UInt8] {
+    let keyByteCount = keyBits / 8
+    if hash.count >= keyByteCount {
+      return Array(hash.prefix(keyByteCount))
+    }
+
+    return Array(hash + Data(repeating: 0x00, count: keyByteCount - hash.count))
+  }
+
+  private func key(
+    for block: Data,
+    encryptedKey: EncryptedKey,
+    algorithm: AgileHashAlgorithm,
+    passwordData: Data
+  ) -> [UInt8] {
+    var hash = algorithm.hash(data: encryptedKey.saltValue + passwordData)
+
+    for i in 0..<encryptedKey.spinCount {
+      let spin = DataWriter()
+      spin.write(i)
+      hash = algorithm.hash(data: spin.data + hash)
+    }
+
+    hash = algorithm.hash(data: hash + block)
+
+    return deriveKey(from: hash, keyBits: encryptedKey.keyBits)
+  }
+
+  private func decrypted(
+    _ value: Data,
+    key: [UInt8],
+    iv: Data
+  ) throws -> Data {
+    let aes = try CryptoSwift.AES(
+      key: key,
+      blockMode: CBC(iv: Array(iv)),
+      padding: .noPadding
+    )
+    return try Data(aes.decrypt([UInt8](value)))
+  }
+
   func secretKey(password: String) throws -> [UInt8] {
-    let block3 = Data([0x14, 0x6E, 0x0B, 0xE7, 0xAB, 0xAC, 0xD0, 0xD6])
+    let encryptedKeyValueBlock = Data([0x14, 0x6E, 0x0B, 0xE7, 0xAB, 0xAC, 0xD0, 0xD6])
+    let verifierHashInputBlock = Data([0xFE, 0xA7, 0xD2, 0x76, 0x3B, 0x4B, 0x9E, 0x79])
+    let verifierHashValueBlock = Data([0xD7, 0xAA, 0x0F, 0x6D, 0x30, 0x61, 0x34, 0x4E])
 
     guard let encryptedKey = keyEncryptors.keyEncryptor.first?.encryptedKey else {
       throw CryptoOfficeError.encryptedKeyNotSpecifiedForAgileEncryption
     }
 
-    let algorithm = encryptedKey.hashAlgorithm.lowercased()
-
-    guard algorithm == "sha512" else {
-      throw CryptoOfficeError.hashAlgorithmNotSupported(actual: algorithm, expected: ["sha512"])
+    guard let algorithm = AgileHashAlgorithm(officeName: encryptedKey.hashAlgorithm) else {
+      throw CryptoOfficeError.hashAlgorithmNotSupported(
+        actual: encryptedKey.hashAlgorithm.lowercased(),
+        expected: AgileHashAlgorithm.supportedNames
+      )
     }
     guard let passwordData = password.data(using: .utf16LittleEndian)
     else { throw CryptoOfficeError.cantEncodePassword(encoding: .utf16LittleEndian) }
 
-    // Initial round sha512(salt + password)
-    var hash = SHA512.hash(data: encryptedKey.saltValue + passwordData)
+    let verifierInputKey = key(
+      for: verifierHashInputBlock,
+      encryptedKey: encryptedKey,
+      algorithm: algorithm,
+      passwordData: passwordData
+    )
+    let verifierHashKey = key(
+      for: verifierHashValueBlock,
+      encryptedKey: encryptedKey,
+      algorithm: algorithm,
+      passwordData: passwordData
+    )
+    let secretKeyKey = key(
+      for: encryptedKeyValueBlock,
+      encryptedKey: encryptedKey,
+      algorithm: algorithm,
+      passwordData: passwordData
+    )
 
-    // Iteration of 0 -> spincount-1; hash = sha512(iterator + hash)
-    for i in 0..<encryptedKey.spinCount {
-      let spin = DataWriter()
-      spin.write(i)
-      hash = SHA512.hash(data: spin.data + hash.data)
+    let verifierInput = try decrypted(
+      encryptedKey.encryptedVerifierHashInput,
+      key: verifierInputKey,
+      iv: encryptedKey.saltValue
+    )
+    let verifierHash = try decrypted(
+      encryptedKey.encryptedVerifierHashValue,
+      key: verifierHashKey,
+      iv: encryptedKey.saltValue
+    )
+    let expectedHash = algorithm.hash(data: verifierInput)
+    guard verifierHash.prefix(expectedHash.count) == expectedHash else {
+      throw CryptoOfficeError.passwordVerificationFailed
     }
 
-    hash = SHA512.hash(data: hash.data + block3)
-
-    // truncate to bitsize
-    let decryptionKey = hash.data[0..<(encryptedKey.keyBits / 8)].bytes
-
-    let aes = try CryptoSwift.AES(
-      key: decryptionKey,
-      blockMode: CBC(iv: encryptedKey.saltValue.bytes),
-      padding: .noPadding
-    )
-    let result = try aes.decrypt(encryptedKey.encryptedKeyValue.bytes)
-    return result
+    return [UInt8](try decrypted(
+      encryptedKey.encryptedKeyValue,
+      key: secretKeyKey,
+      iv: encryptedKey.saltValue
+    ))
   }
 
   func decrypt(_ reader: DataReader, secretKey: [UInt8]) throws -> Data {
     let segmentLength: UInt32 = 4096
+
+    guard let algorithm = AgileHashAlgorithm(officeName: keyData.hashAlgorithm) else {
+      throw CryptoOfficeError.hashAlgorithmNotSupported(
+        actual: keyData.hashAlgorithm.lowercased(), expected: AgileHashAlgorithm.supportedNames
+      )
+    }
 
     let totalSize: UInt32 = reader.read()
     let lastSegmentSize = totalSize % segmentLength
@@ -100,17 +198,19 @@ struct AgileInfo: Decodable {
       let segmentIndex = DataWriter()
       segmentIndex.write(i)
 
-      let iv = (keyData.saltValue + segmentIndex.data).sha512()[0..<16].bytes
+      let iv = Array(algorithm.hash(data: keyData.saltValue + segmentIndex.data).prefix(16))
       let aes = try AES(key: secretKey, blockMode: CBC(iv: iv), padding: .noPadding)
 
       let chunk: Data
       let decryptedChunk: Data
       if i == totalSegments - 1 {
         chunk = reader.readDataToEnd()
-        decryptedChunk = try Data(aes.decrypt(chunk.bytes)).prefix(Int(lastSegmentSize))
+        let chunkBytes = [UInt8](chunk)
+        decryptedChunk = try Data(aes.decrypt(chunkBytes)).prefix(Int(lastSegmentSize))
       } else {
         chunk = reader.readData(ofLength: Int(segmentLength))
-        decryptedChunk = try Data(aes.decrypt(chunk.bytes))
+        let chunkBytes = [UInt8](chunk)
+        decryptedChunk = try Data(aes.decrypt(chunkBytes))
         precondition(decryptedChunk.count == 4096)
       }
       result.append(decryptedChunk)
