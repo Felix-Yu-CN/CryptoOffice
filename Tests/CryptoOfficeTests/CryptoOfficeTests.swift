@@ -115,4 +115,100 @@ final class CryptoOfficeTests: XCTestCase {
     XCTAssertNotNil(archive["[Content_Types].xml"])
     XCTAssertNotNil(archive["word/document.xml"])
   }
+
+  func testDecryptReportsProgress() throws {
+    let url = URL(fileURLWithPath: #file)
+      .deletingLastPathComponent()
+      .appendingPathComponent("美国驻华大使 - 加密.docx")
+
+    let file = try CryptoOfficeFile(path: url.path)
+    var progressValues: [Double] = []
+
+    let data = try file.decrypt(password: "123456") { progress in
+      progressValues.append(progress)
+    }
+
+    XCTAssertFalse(progressValues.isEmpty)
+    XCTAssertEqual(try XCTUnwrap(progressValues.last), 1, accuracy: 0.000_001)
+    XCTAssertGreaterThan(data.count, 0)
+  }
+
+  func testDecryptToTemporaryFileReportsProgress() throws {
+    let url = URL(fileURLWithPath: #file)
+      .deletingLastPathComponent()
+      .appendingPathComponent("美国驻华大使 - 加密.docx")
+
+    let file = try CryptoOfficeFile(path: url.path)
+    var progressValues: [Double] = []
+
+    let temporaryURL = try file.decryptToTemporaryFile(password: "123456") { progress in
+      progressValues.append(progress)
+    }
+
+    defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+    XCTAssertFalse(progressValues.isEmpty)
+    XCTAssertEqual(try XCTUnwrap(progressValues.last), 1, accuracy: 0.000_001)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: temporaryURL.path))
+  }
+
+  func testDecryptToTemporaryFileRemovesPartialFileOnFailure() throws {
+    let url = URL(fileURLWithPath: #file)
+      .deletingLastPathComponent()
+      .appendingPathComponent("美国驻华大使 - 加密.docx")
+
+    let file = try CryptoOfficeFile(path: url.path)
+    let temporaryURL = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
+
+    try? FileManager.default.removeItem(at: temporaryURL)
+
+    XCTAssertThrowsError(try file.decryptToTemporaryFile(password: "wrong-password")) { error in
+      guard case CryptoOfficeError.passwordVerificationFailed = error else {
+        return XCTFail("unexpected error: \(error)")
+      }
+    }
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryURL.path))
+  }
+
+  func testBenchmarkLargeDocumentDecryption() throws {
+    let url = URL(fileURLWithPath: #file)
+      .deletingLastPathComponent()
+      .appendingPathComponent("城市漫步指南：济州岛，更适合年轻人的短途免签旅行地 - 少数派 - 加密.docx")
+    guard FileManager.default.fileExists(atPath: url.path) else {
+      throw XCTSkip("large benchmark fixture is not available in this test target layout")
+    }
+    let iterations = 3
+
+    var decryptTimings: [TimeInterval] = []
+    var decryptToFileTimings: [TimeInterval] = []
+    var decryptedSize = 0
+
+    for _ in 0..<iterations {
+      let file = try CryptoOfficeFile(path: url.path)
+      let start = Date()
+      let data = try file.decrypt(password: "123456")
+      decryptTimings.append(Date().timeIntervalSince(start))
+      decryptedSize = data.count
+    }
+
+    for _ in 0..<iterations {
+      let file = try CryptoOfficeFile(path: url.path)
+      let start = Date()
+      let temporaryURL = try file.decryptToTemporaryFile(password: "123456")
+      decryptToFileTimings.append(Date().timeIntervalSince(start))
+      let attributes = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
+      decryptedSize = (attributes[.size] as? NSNumber)?.intValue ?? decryptedSize
+      try? FileManager.default.removeItem(at: temporaryURL)
+    }
+
+    let decryptAverage = decryptTimings.reduce(0, +) / Double(decryptTimings.count)
+    let decryptToFileAverage = decryptToFileTimings.reduce(0, +) / Double(decryptToFileTimings.count)
+
+    print("BENCHMARK large docx size=\(decryptedSize) bytes")
+    print("decrypt timings=\(decryptTimings) avg=\(decryptAverage)")
+    print("decryptToTemporaryFile timings=\(decryptToFileTimings) avg=\(decryptToFileAverage)")
+
+    XCTAssertGreaterThan(decryptedSize, 0)
+  }
 }

@@ -43,7 +43,11 @@ let package = Package(
     .testTarget(
       name: "CryptoOfficeTests",
       dependencies: ["CryptoOffice", "ZIPFoundation"],
-      exclude: ["TestWorkbook.xlsx", "美国驻华大使 - 加密.docx"]
+      exclude: [
+        "TestWorkbook.xlsx",
+        "美国驻华大使 - 加密.docx",
+        "城市漫步指南：济州岛，更适合年轻人的短途免签旅行地 - 少数派 - 加密.docx",
+      ]
     ),
   ]
 )

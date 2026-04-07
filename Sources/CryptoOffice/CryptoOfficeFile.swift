@@ -88,19 +88,80 @@ public final class CryptoOfficeFile {
   }
 
   public func decrypt(password: String) throws -> Data {
+    try decrypt(password: password, progressHandler: nil)
+  }
+
+  public func decrypt(
+    password: String,
+    progressHandler: ((Double) -> Void)? = nil
+  ) throws -> Data {
     let secretKey = try encryptionInfo.secretKey(password: password)
 
     let stream = try oleFile.stream(packageEntry)
 
-    return try encryptionInfo.decrypt(stream, secretKey: secretKey)
+    var result = Data()
+    var reportedCompletion = false
+    try encryptionInfo.decrypt(
+      stream,
+      secretKey: secretKey,
+      processChunk: { chunk in
+        result.append(chunk)
+      },
+      progressHandler: progressHandler.map { handler in
+        { progress in
+          reportedCompletion = reportedCompletion || progress >= 1
+          handler(progress)
+        }
+      }
+    )
+    if let progressHandler, !reportedCompletion {
+      progressHandler(1)
+    }
+    return result
   }
 
   public func decryptToTemporaryFile(password: String) throws -> URL {
-    let data = try decrypt(password: password)
+    try decryptToTemporaryFile(password: password, progressHandler: nil)
+  }
+
+  public func decryptToTemporaryFile(
+    password: String,
+    progressHandler: ((Double) -> Void)? = nil
+  ) throws -> URL {
+    let secretKey = try encryptionInfo.secretKey(password: password)
+    let stream = try oleFile.stream(packageEntry)
     let temporaryDirectory = FileManager.default.temporaryDirectory
     let temporaryURL = temporaryDirectory.appendingPathComponent(sourceURL.lastPathComponent)
 
-    try data.write(to: temporaryURL)
+    _ = FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: temporaryURL)
+    var shouldDelete = true
+
+    defer {
+      handle.closeFile()
+      if shouldDelete {
+        try? FileManager.default.removeItem(at: temporaryURL)
+      }
+    }
+
+    var reportedCompletion = false
+    try encryptionInfo.decrypt(
+      stream,
+      secretKey: secretKey,
+      processChunk: { chunk in
+        handle.write(chunk)
+      },
+      progressHandler: progressHandler.map { handler in
+        { progress in
+          reportedCompletion = reportedCompletion || progress >= 1
+          handler(progress)
+        }
+      }
+    )
+    if let progressHandler, !reportedCompletion {
+      progressHandler(1)
+    }
+    shouldDelete = false
     return temporaryURL
   }
 }

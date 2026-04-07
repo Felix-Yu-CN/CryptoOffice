@@ -21,6 +21,11 @@ extension Crypto.Digest {
   var data: Data { Data(makeIterator()) }
 }
 
+private func littleEndianData<T: FixedWidthInteger>(_ value: T) -> Data {
+  var littleEndianValue = value.littleEndian
+  return withUnsafeBytes(of: &littleEndianValue) { Data($0) }
+}
+
 private enum AgileHashAlgorithm: String, CaseIterable {
   case sha1
   case sha256
@@ -177,7 +182,12 @@ struct AgileInfo: Decodable {
     ))
   }
 
-  func decrypt(_ reader: DataReader, secretKey: [UInt8]) throws -> Data {
+  func decrypt(
+    _ reader: DataReader,
+    secretKey: [UInt8],
+    processChunk: (Data) throws -> Void,
+    progressHandler: ((Double) -> Void)? = nil
+  ) throws {
     let segmentLength: UInt32 = 4096
 
     guard let algorithm = AgileHashAlgorithm(officeName: keyData.hashAlgorithm) else {
@@ -191,31 +201,40 @@ struct AgileInfo: Decodable {
 
     reader.seek(toOffset: 8)
 
-    var result = Data()
     let totalSegments = totalSize / segmentLength + (lastSegmentSize > 0 ? 1 : 0)
+    let salt = keyData.saltValue
 
     for i in 0..<totalSegments {
-      let segmentIndex = DataWriter()
-      segmentIndex.write(i)
-
-      let iv = Array(algorithm.hash(data: keyData.saltValue + segmentIndex.data).prefix(16))
+      let segmentIndexData = littleEndianData(i)
+      let ivSource = salt + segmentIndexData
+      let iv = Array(algorithm.hash(data: ivSource).prefix(16))
       let aes = try AES(key: secretKey, blockMode: CBC(iv: iv), padding: .noPadding)
 
       let chunk: Data
       let decryptedChunk: Data
       if i == totalSegments - 1 {
         chunk = reader.readDataToEnd()
-        let chunkBytes = [UInt8](chunk)
-        decryptedChunk = try Data(aes.decrypt(chunkBytes)).prefix(Int(lastSegmentSize))
+        let decryptedData = try Data(aes.decrypt([UInt8](chunk)))
+        if lastSegmentSize > 0 {
+          decryptedChunk = decryptedData.prefix(Int(lastSegmentSize))
+        } else {
+          decryptedChunk = decryptedData
+        }
       } else {
         chunk = reader.readData(ofLength: Int(segmentLength))
-        let chunkBytes = [UInt8](chunk)
-        decryptedChunk = try Data(aes.decrypt(chunkBytes))
+        decryptedChunk = try Data(aes.decrypt([UInt8](chunk)))
         precondition(decryptedChunk.count == 4096)
       }
-      result.append(decryptedChunk)
+      try processChunk(decryptedChunk)
+      progressHandler?(Double(i + 1) / Double(totalSegments))
     }
+  }
 
+  func decrypt(_ reader: DataReader, secretKey: [UInt8]) throws -> Data {
+    var result = Data()
+    try decrypt(reader, secretKey: secretKey) { chunk in
+      result.append(chunk)
+    }
     return result
   }
 }
