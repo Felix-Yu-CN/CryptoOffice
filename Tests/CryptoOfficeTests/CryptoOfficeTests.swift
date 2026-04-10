@@ -18,6 +18,29 @@ import XCTest
 import ZIPFoundation
 
 final class CryptoOfficeTests: XCTestCase {
+  private func writeTemporaryOLEHeader(byteOrder: UInt16) throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension("ppt")
+    var data = Data()
+
+    data.append(contentsOf: [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1])
+    data.append(Data(repeating: 0x00, count: 16))
+
+    var minorVersion = UInt16(0x003E).littleEndian
+    withUnsafeBytes(of: &minorVersion) { data.append(contentsOf: $0) }
+
+    var dllVersion = UInt16(0x0003).littleEndian
+    withUnsafeBytes(of: &dllVersion) { data.append(contentsOf: $0) }
+
+    var byteOrderValue = byteOrder.littleEndian
+    withUnsafeBytes(of: &byteOrderValue) { data.append(contentsOf: $0) }
+
+    data.append(Data(repeating: 0x00, count: 512 - data.count))
+    try data.write(to: url)
+    return url
+  }
+
   private func findEntry(named name: String, in entry: DirectoryEntry) -> DirectoryEntry? {
     if entry.name == name {
       return entry
@@ -56,6 +79,26 @@ final class CryptoOfficeTests: XCTestCase {
 
   func testIsEncryptedReturnsFalseForUnencryptedFile() throws {
     XCTAssertFalse(try CryptoOfficeFile.isEncrypted(path: #file))
+  }
+
+  func testIsEncryptedReturnsFalseForUnsupportedOLEVariant() throws {
+    let url = try writeTemporaryOLEHeader(byteOrder: 0xFEFF)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    XCTAssertFalse(try CryptoOfficeFile.isEncrypted(path: url.path))
+  }
+
+  func testInitMapsUnsupportedOLEVariantToFileIsNotEncrypted() throws {
+    let url = try writeTemporaryOLEHeader(byteOrder: 0xFEFF)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    XCTAssertThrowsError(try CryptoOfficeFile(path: url.path)) { error in
+      guard case let CryptoOfficeError.fileIsNotEncrypted(path) = error else {
+        return XCTFail("unexpected error: \(error)")
+      }
+
+      XCTAssertEqual(path, url.path)
+    }
   }
 
   func testWorkbook() throws {

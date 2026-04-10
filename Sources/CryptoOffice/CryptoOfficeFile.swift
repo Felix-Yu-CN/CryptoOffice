@@ -38,6 +38,27 @@ public final class CryptoOfficeFile {
     return nil
   }
 
+  private static func isUnsupportedForEncryptedOOXML(_ error: OLEError) -> Bool {
+    switch error {
+    case .fileIsNotOLE,
+         .bigEndianNotSupported,
+         .incorrectCLSID,
+         .incompleteHeader,
+         .incorrectDLLVersion,
+         .incorrectSectorSize,
+         .incorrectMiniSectorSize,
+         .incorrectMiniStreamCutoffSize,
+         .incorrectNumberOfDirectorySectors,
+         .incorrectNumberOfFATSectors,
+         .incorrectNumberOFDIFATSectors,
+         .incorrectRootEntry,
+         .duplicateRootEntry:
+      return true
+    default:
+      return false
+    }
+  }
+
   public init(path: String) throws {
     do {
       sourceURL = URL(fileURLWithPath: path)
@@ -71,8 +92,11 @@ public final class CryptoOfficeFile {
       default:
         throw CryptoOfficeError.unknownEncryptionVersion(major: major, minor: minor)
       }
-    } catch let OLEError.fileIsNotOLE(path) {
-      throw CryptoOfficeError.fileIsNotEncrypted(path: path)
+    } catch let error as OLEError {
+      if Self.isUnsupportedForEncryptedOOXML(error) {
+        throw CryptoOfficeError.fileIsNotEncrypted(path: path)
+      }
+      throw error
     }
   }
 
@@ -82,8 +106,11 @@ public final class CryptoOfficeFile {
       return
         findEntry(named: "EncryptionInfo", in: oleFile.root) != nil &&
         findEntry(named: "EncryptedPackage", in: oleFile.root) != nil
-    } catch OLEError.fileIsNotOLE {
-      return false
+    } catch let error as OLEError {
+      if Self.isUnsupportedForEncryptedOOXML(error) {
+        return false
+      }
+      throw error
     }
   }
 
